@@ -1,0 +1,204 @@
+# SPDX-FileCopyrightText: Copyright (C) Arduino s.r.l. and/or its affiliated companies
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: B
+
+on:
+  issues:
+    types: [opened, edited, reopened, closed]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: b-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+env:
+  X: "true"
+
+jobs:
+  run:
+    if: github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'b')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+      I: ${{ github.event.issue.number }}
+      U: ${{ github.event.issue.user.login }}
+      UN: ${{ github.event.issue.user.id }}
+    steps:
+      - name: s1
+        id: s1
+        run: |
+          state=$(gh issue view "$I" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+          if [ "$state" != "OPEN" ]; then
+            echo "stop=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName --jq ".[] | select(.headRefName | startswith(\"b/$I-\")) | .number" | head -n 1)
+          if [ -n "$open" ]; then
+            echo "stop=2" >> "$GITHUB_OUTPUT"
+            gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "ℹ️ #$open"
+            exit 0
+          fi
+          echo "stop=" >> "$GITHUB_OUTPUT"
+
+      - name: s2
+        if: steps.s1.outputs.stop == ''
+        run: gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "⏳ @$U"
+
+      - uses: actions/checkout@v4
+        if: steps.s1.outputs.stop == ''
+        with:
+          token: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: s3
+        if: steps.s1.outputs.stop == ''
+        env:
+          BODY: ${{ github.event.issue.body }}
+        run: printf '%s\n' "$BODY" > "$RUNNER_TEMP/body.md"
+
+      - name: s4
+        id: s4
+        if: steps.s1.outputs.stop == ''
+        run: python3 .github/scripts/b.py "$RUNNER_TEMP/body.md" "$U" "$I"
+
+      - name: s5
+        if: failure() && steps.s1.outputs.stop == '' && steps.s4.outputs.ok == ''
+        run: gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "⚠️ $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: s6
+        if: steps.s1.outputs.stop == '' && steps.s4.outputs.ok != 'true'
+        env:
+          E: ${{ steps.s4.outputs.e }}
+        run: |
+          gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "❌ $E"
+          gh issue close "$I" --repo "$GITHUB_REPOSITORY" --reason "not planned"
+          echo "::error::$E"
+          exit 1
+
+      - name: s7
+        if: steps.s1.outputs.stop == ''
+        env:
+          TITLE: ${{ steps.s4.outputs.title }}
+        run: |
+          {
+            cat "$RUNNER_TEMP/body.md"
+            printf '\n---\n\n> 🔒 @%s\n' "$U"
+          } > "$RUNNER_TEMP/body2.md"
+          gh issue edit "$I" --repo "$GITHUB_REPOSITORY" --title "[b] $TITLE" --body-file "$RUNNER_TEMP/body2.md"
+
+      - name: s8
+        id: s8
+        if: steps.s1.outputs.stop == ''
+        env:
+          BRANCH: ${{ steps.s4.outputs.branch }}
+          FILES: ${{ steps.s4.outputs.files }}
+          TITLE: ${{ steps.s4.outputs.title }}
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          read -ra files <<< "$FILES"
+          git add -A -- "${files[@]}"
+          git commit --author "$U <$UN+$U@users.noreply.github.com>" -m "$TITLE" -m "#$I @$U"
+          git push --force origin "$BRANCH"
+          linked=$(gh api "repos/$GITHUB_REPOSITORY/commits/$(git rev-parse HEAD)" --jq '.author.login // ""' || echo "")
+          if [ "${linked,,}" = "${U,,}" ]; then
+            echo "linked=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "linked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::author: '${linked:-none}'"
+          fi
+
+      - name: s9
+        if: steps.s1.outputs.stop == ''
+        env:
+          BRANCH: ${{ steps.s4.outputs.branch }}
+          TITLE: ${{ steps.s4.outputs.title }}
+          LINKED: ${{ steps.s8.outputs.linked }}
+        run: |
+          printf '@%s #%s\n\n---\n\nThis PR closes #%s\n' "$U" "$I" "$I" > "$RUNNER_TEMP/pr.md"
+          pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/pr.md")
+          number=${pr_url##*/}
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$number/labels" -f 'labels[]=b' --silent \
+            || echo "::warning::label"
+          gh pr comment "$number" --repo "$GITHUB_REPOSITORY" --body-file r.md \
+            || echo "::warning::comment"
+          if [ "$LINKED" != "true" ]; then
+            gh pr comment "$number" --repo "$GITHUB_REPOSITORY" --body "⚠️ author ≠ @$U" \
+              || echo "::warning::comment"
+          fi
+          {
+            printf '✅ %s\n' "$pr_url"
+            if [ "$X" = "true" ]; then
+              printf '\n📝 https://cla-assistant.io/%s?pullRequest=%s\n' "$GITHUB_REPOSITORY" "$number"
+            fi
+          } > "$RUNNER_TEMP/ok.md"
+          gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/ok.md"
+
+      - name: s10
+        if: steps.s1.outputs.stop == '' && steps.s4.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          sha=$(git rev-parse HEAD)
+          for _ in 1 2 3 4 5 6; do
+            st=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/statuses" --jq '.[] | "- status `\(.context)`: \(.state) (\(.description // "")) by \(.creator.login)"' || true)
+            [ -n "$st" ] && break
+            sleep 15
+          done
+          cr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs" --jq '.check_runs[] | "- check `\(.name)`: \(.status) \(.conclusion // "") by \(.app.slug)"' || true)
+          {
+            echo "### $sha"
+            gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '"- author: \(.commit.author.name) <\(.commit.author.email)> = \(.author.login // "none")\n- committer: \(.commit.committer.name) <\(.commit.committer.email)> = \(.committer.login // "none")"'
+            echo "${st:-- no status after 90 s}"
+            echo "${cr:-- no check}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: s11
+        if: failure() && steps.s4.outputs.ok == 'true'
+        run: gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "⚠️ $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  e:
+    if: github.event.action == 'edited' && github.event.issue.state == 'open' && contains(github.event.issue.labels.*.name, 'b')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+      I: ${{ github.event.issue.number }}
+      WHO: ${{ github.event.sender.login }}
+    steps:
+      - name: s1
+        run: |
+          bot=$(gh api user --jq .login 2>/dev/null || echo "")
+          if [ -n "$bot" ] && [ "$bot" = "$WHO" ]; then exit 0; fi
+          gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "ℹ️ @$WHO edit = no-op"
+
+  r:
+    if: github.event.action == 'reopened' && contains(github.event.issue.labels.*.name, 'b')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+      I: ${{ github.event.issue.number }}
+      WHO: ${{ github.event.sender.login }}
+    steps:
+      - name: s1
+        run: |
+          gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "🔒 @$WHO"
+          gh issue close "$I" --repo "$GITHUB_REPOSITORY" --reason "not planned"
+
+  c:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+      I: ${{ github.event.issue.number }}
+      WHO: ${{ github.event.sender.login }}
+    steps:
+      - name: s1
+        run: |
+          for pr in $(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName --jq ".[] | select(.headRefName | startswith(\"b/$I-\")) | .number"); do
+            gh pr close "$pr" --repo "$GITHUB_REPOSITORY" --delete-branch --comment "#$I ✖ @$WHO"
+          done

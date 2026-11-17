@@ -1,0 +1,10 @@
+name: B
+description: B
+labels: [b]
+body:
+  - type: input
+    id: id
+    attributes:
+      label: ID
+    validations:
+      required: true

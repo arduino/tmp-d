@@ -1,0 +1,17 @@
+name: A
+description: A
+labels: [a]
+body:
+  - type: input
+    id: k
+    attributes:
+      label: K
+    validations:
+      required: true
+
+  - type: input
+    id: v
+    attributes:
+      label: V
+    validations:
+      required: true

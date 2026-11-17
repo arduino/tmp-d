@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (C) Arduino s.r.l. and/or its affiliated companies
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: C
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  run:
+    if: >
+      github.event.pull_request.merged == false &&
+      (startsWith(github.event.pull_request.head.ref, 'a/') || startsWith(github.event.pull_request.head.ref, 'b/'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+      REF: ${{ github.event.pull_request.head.ref }}
+      PR: ${{ github.event.pull_request.number }}
+      WHO: ${{ github.event.sender.login }}
+    steps:
+      - name: s1
+        run: |
+          i=${REF#*/}; i=${i%%-*}
+          state=$(gh issue view "$i" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo "")
+          if [ "$state" = "OPEN" ]; then
+            gh issue close "$i" --repo "$GITHUB_REPOSITORY" --reason "not planned" --comment "#$PR ✖ @$WHO"
+          fi
