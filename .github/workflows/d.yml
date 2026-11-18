@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (C) Arduino s.r.l. and/or its affiliated companies
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: D
+
+on: status
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  run:
+    if: github.event.context == 'license/cla' && github.event.state == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.T || secrets.GITHUB_TOKEN }}
+      SHA: ${{ github.event.sha }}
+      REFS: ${{ toJSON(github.event.branches.*.name) }}
+    steps:
+      - name: s1
+        run: |
+          for ref in $(jq -r '.[]' <<< "$REFS"); do
+            [[ "$ref" =~ ^[ab]/([0-9]+)- ]] || continue
+            i=${BASH_REMATCH[1]}
+            pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$ref" --json number,headRefOid --jq ".[] | select(.headRefOid == \"$SHA\") | .number" | head -n 1)
+            [ -n "$pr" ] || continue
+            state=$(gh issue view "$i" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo "")
+            [ "$state" = "OPEN" ] || continue
+            seen=$(gh issue view "$i" --repo "$GITHUB_REPOSITORY" --json comments --jq "[.comments[] | select(.body | contains(\"<!-- d:$pr -->\"))] | length")
+            [ "$seen" = "0" ] || continue
+            printf '✅ 📝 → 👀 #%s\n\n<!-- d:%s -->\n' "$pr" "$pr" > "$RUNNER_TEMP/d.md"
+            gh issue comment "$i" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/d.md"
+          done

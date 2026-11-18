@@ -115,6 +115,7 @@ jobs:
           fi
 
       - name: s9
+        id: s9
         if: steps.s1.outputs.stop == ''
         env:
           BRANCH: ${{ steps.s4.outputs.branch }}
@@ -139,17 +140,14 @@ jobs:
           fi
           gh api -X PUT "repos/$GITHUB_REPOSITORY/issues/$number/lock" --silent \
             || echo "::warning::lock"
-          {
-            printf '✅ %s\n' "$pr_url"
-            if [ "$X" = "true" ]; then
-              printf '\n📝 https://cla-assistant.io/%s?pullRequest=%s\n' "$GITHUB_REPOSITORY" "$number"
-            fi
-          } > "$RUNNER_TEMP/ok.md"
-          gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/ok.md"
+          gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "✅ $pr_url"
+          echo "n=$number" >> "$GITHUB_OUTPUT"
 
       - name: s10
         if: steps.s1.outputs.stop == '' && steps.s4.outputs.ok == 'true'
         continue-on-error: true
+        env:
+          N: ${{ steps.s9.outputs.n }}
         run: |
           sha=$(git rev-parse HEAD)
           for _ in 1 2 3 4 5 6; do
@@ -164,6 +162,11 @@ jobs:
             echo "${st:-- no status after 90 s}"
             echo "${cr:-- no check}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          cla=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/statuses" --jq '[.[] | select(.context == "license/cla")][0].state // ""' || echo "")
+          if [ "$X" = "true" ] && [ "$cla" != "success" ]; then
+            gh issue comment "$I" --repo "$GITHUB_REPOSITORY" --body "📝 https://cla-assistant.io/$GITHUB_REPOSITORY?pullRequest=$N" \
+              || echo "::warning::comment"
+          fi
 
       - name: s11
         if: failure() && steps.s4.outputs.ok == 'true'
