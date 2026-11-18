@@ -1,5 +1,5 @@
-name: A
-description: A
+name: AAA
+description: AAA
 labels: [a]
 body:
   - type: input
