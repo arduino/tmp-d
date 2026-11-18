@@ -115,7 +115,6 @@ jobs:
           fi
 
       - name: s9
-        id: s9
         if: steps.s1.outputs.stop == ''
         env:
           BRANCH: ${{ steps.s4.outputs.branch }}
@@ -125,7 +124,11 @@ jobs:
           printf '@%s #%s\n\n---\n\nThis PR closes #%s\n' "$U" "$I" "$I" > "$RUNNER_TEMP/pr.md"
           pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/pr.md")
           number=${pr_url##*/}
-          echo "n=$number" >> "$GITHUB_OUTPUT"
+          if [ "$X" = "true" ]; then
+            printf '\n📝 https://cla-assistant.io/%s?pullRequest=%s\n' "$GITHUB_REPOSITORY" "$number" >> "$RUNNER_TEMP/pr.md"
+            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/pr.md" \
+              || echo "::warning::body"
+          fi
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$number/labels" -f 'labels[]=b' --silent \
             || echo "::warning::label"
           gh pr comment "$number" --repo "$GITHUB_REPOSITORY" --body-file r.md \
@@ -134,6 +137,8 @@ jobs:
             gh pr comment "$number" --repo "$GITHUB_REPOSITORY" --body "⚠️ author ≠ @$U" \
               || echo "::warning::comment"
           fi
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/issues/$number/lock" --silent \
+            || echo "::warning::lock"
           {
             printf '✅ %s\n' "$pr_url"
             if [ "$X" = "true" ]; then
@@ -145,8 +150,6 @@ jobs:
       - name: s10
         if: steps.s1.outputs.stop == '' && steps.s4.outputs.ok == 'true'
         continue-on-error: true
-        env:
-          N: ${{ steps.s9.outputs.n }}
         run: |
           sha=$(git rev-parse HEAD)
           for _ in 1 2 3 4 5 6; do
@@ -161,8 +164,6 @@ jobs:
             echo "${st:-- no status after 90 s}"
             echo "${cr:-- no check}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          gh api -X PUT "repos/$GITHUB_REPOSITORY/issues/$N/lock" --silent \
-            || echo "::warning::lock"
 
       - name: s11
         if: failure() && steps.s4.outputs.ok == 'true'
